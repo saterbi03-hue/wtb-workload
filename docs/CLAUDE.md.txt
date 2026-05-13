@@ -1,0 +1,67 @@
+# WTB Workload Engine — Project Context
+
+## What we're building
+A workload analysis tool for managers. It ingests an Excel file describing
+topics owned by ~11 chargés d'affaires (CAs), splits each topic into 5 phases,
+computes current load and weekly/monthly forecasts, suggests load transfers
+between CAs, and outputs textual recommendations. Final product = a clean
+local web interface usable by non-technical managers.
+
+## Stack (non-negotiable)
+- Backend: FastAPI (Python 3.11+), pandas, openpyxl, pydantic v2.
+  Layered: `api/` (thin route handlers) calls into `domain/` (pure logic).
+- Frontend: Vite + React + TypeScript + Tailwind + shadcn/ui + Recharts.
+  Organized by feature, not by file type.
+- Local only. No auth. CORS open to localhost.
+- Data flow: user uploads a fresh wtb_data.xlsx through the UI each session.
+  The backend parses it in memory; no DB.
+
+## Source files (in /docs)
+- wtb_data.xlsx — the consolidated input data, 4 sheets:
+  - topics (589 rows, 1 per CA × project): per-phase start/end/status columns
+  - phase_params (5 rows): duration_hrs, delai_weeks, weight per phase
+  - persons (14 rows): ca_sheet, ca_display, active flag, n_topics
+  - config (key/value): today, weekly_capacity_hrs, catchup_window_weeks,
+    stale_threshold_weeks, forecast_horizon_weeks
+- roadmap_visual_workload_engine.pdf — the 6-step methodology
+
+## Core formulas
+- Per phase: VH (h/week) = duration_hrs / delai_weeks
+- Workload fraction = sum(VH of active phases) / weekly_capacity_hrs
+- A phase-instance is "active in week W" when:
+    status not in {VAL, CANCELED}
+    AND end date is not stale (more than stale_threshold_weeks before today)
+    AND [effective_start, effective_end] overlaps W, where:
+      effective_start = max(today, scheduled_start)
+      effective_end   = max(effective_start + catchup_window_weeks, scheduled_end)
+- Inactive CAs (active flag = 0) are excluded.
+
+## Out of scope (do NOT implement)
+- Overload / underload thresholds and labels — ignore those config keys
+  and any "OVERLOADED" / "UNDERLOADED" tagging. Show raw values in the UI;
+  the manager interprets.
+- Authentication, multi-user, persistence, deployment.
+
+## UI pages (in this order)
+1. Upload — drag-and-drop wtb_data.xlsx, validates, shows summary
+2. Overview — KPI cards + CA × week heatmap
+3. Team — table of all CAs with current load + peak load + peak week
+4. CA detail — drill-down: forecast curve, active phases, topics list
+5. Forecast — weekly + monthly stacked charts, filterable by CA
+6. Smoothing — transfer suggestion cards with before/after impact
+7. Decisions — HIGH/MEDIUM/LOW recommendation list
+
+## Code style
+- Backend: type hints everywhere, pydantic models for API contracts,
+  pure functions in domain/ (no I/O), pytest tests for the formulas.
+- Frontend: functional components, React Query for server state,
+  shadcn primitives only (no Material-UI, no Bootstrap), Recharts for charts.
+- No emojis in code, comments, or UI copy.
+- Restrained design: neutral palette, lots of whitespace, one accent color.
+
+## Working agreement with Claude Code
+- Always start with a plan before writing code. Show the file tree you intend
+  to create and wait for confirmation.
+- Build feature by feature. Don't scaffold all 7 pages at once.
+- After each feature: run the backend, run the frontend, confirm it works.
+- Ask me before introducing a new dependency.

@@ -1,0 +1,1137 @@
+% ============================================================
+%  WTB Workload Engine — Technical Architecture Document
+%  Compile with: pdflatex architecture.tex (twice for TOC)
+% ============================================================
+\documentclass[12pt,a4paper]{report}
+
+% ── Packages ──────────────────────────────────────────────
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{lmodern}
+\usepackage{geometry}
+\geometry{margin=2.5cm, top=3cm, bottom=3cm}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\usepackage{microtype}
+\usepackage{float}
+
+% ── Colours ───────────────────────────────────────────────
+\definecolor{primary}{RGB}{30, 80, 160}
+\definecolor{codebg}{RGB}{245, 245, 248}
+\definecolor{keywordcolor}{RGB}{0, 100, 180}
+\definecolor{commentcolor}{RGB}{100, 120, 100}
+\definecolor{stringcolor}{RGB}{160, 50, 50}
+\definecolor{highred}{RGB}{200, 40, 40}
+\definecolor{medorange}{RGB}{210, 120, 0}
+\definecolor{lowgreen}{RGB}{40, 160, 80}
+
+% ── Hyperref setup ────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=primary,
+  urlcolor=primary,
+  citecolor=primary,
+  pdftitle={WTB Workload Engine -- Technical Architecture},
+  pdfauthor={Engineering Team},
+}
+
+% ── Headers ───────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textcolor{gray}{WTB Workload Engine}}
+\fancyhead[R]{\small\textcolor{gray}{\leftmark}}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ── Code listings ─────────────────────────────────────────
+\lstset{
+  backgroundcolor=\color{codebg},
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{keywordcolor}\bfseries,
+  commentstyle=\color{commentcolor}\itshape,
+  stringstyle=\color{stringcolor},
+  breaklines=true,
+  frame=single,
+  framerule=0.4pt,
+  rulecolor=\color{gray!50},
+  showstringspaces=false,
+  tabsize=4,
+  captionpos=b,
+}
+
+% ── Theorem-like boxes ────────────────────────────────────
+\newtheorem{definition}{Definition}[chapter]
+\newtheorem{property}{Property}[chapter]
+
+\tcbset{
+  defbox/.style={
+    colback=blue!5, colframe=primary,
+    fonttitle=\bfseries, title={Definition},
+    sharp corners, left=4pt, right=4pt,
+  },
+  notebox/.style={
+    colback=yellow!10, colframe=orange!70!black,
+    fonttitle=\bfseries,
+    sharp corners, left=4pt, right=4pt,
+  },
+}
+
+% ── Math operators ────────────────────────────────────────
+\DeclareMathOperator{\vh}{VH}
+\newcommand{\floor}[1]{\left\lfloor #1 \right\rfloor}
+\newcommand{\ceil}[1]{\left\lceil #1 \right\rceil}
+
+% ── Section formatting ────────────────────────────────────
+\titleformat{\chapter}[display]
+  {\normalfont\huge\bfseries\color{primary}}
+  {\chaptertitlename\ \thechapter}{16pt}{\Huge}
+
+% ============================================================
+\begin{document}
+
+% ── Title page ────────────────────────────────────────────
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+  {\huge\bfseries\color{primary} WTB Workload Engine}\\[0.6cm]
+  {\Large Technical Architecture \& Algorithm Reference}\\[0.3cm]
+  \rule{\linewidth}{0.5pt}\\[1cm]
+  {\large Engineering Document — Version 1.0}\\[0.5cm]
+  {\large May 2026}\\[3cm]
+
+  \begin{tcolorbox}[notebox, title={Scope of this document}]
+    This document describes the complete architecture, data model, and
+    algorithms of the WTB Workload Engine backend. It is written for
+    engineers who need to understand, maintain, or extend the system.
+    Frontend implementation details are out of scope; the analytical
+    engine is the central subject.
+  \end{tcolorbox}
+
+  \vfill
+  {\small\textcolor{gray}{Internal document --- WTB Qualification Team}}
+\end{titlepage}
+
+% ── Table of contents ─────────────────────────────────────
+\tableofcontents
+\clearpage
+
+% ============================================================
+\chapter{Context and Objectives}
+% ============================================================
+
+\section{Business Problem}
+
+The WTB (Work-to-be-done) qualification process covers a portfolio of
+\textbf{589 topics}---each representing one supplier product or component
+to be qualified---spread across \textbf{11 active Certification Agents}
+(CAs). Every topic goes through five sequential qualification phases.
+Each phase carries its own time budget and labour cost.
+
+Without tooling, a manager has no visibility into:
+\begin{itemize}
+  \item which CAs are currently overloaded or underutilised;
+  \item whether a workload peak is approaching in the coming months;
+  \item which specific topics should be reassigned to rebalance the team.
+\end{itemize}
+
+The WTB Workload Engine solves this by computing, from a structured
+Excel workbook, a full 78-week workload forecast per CA and generating
+concrete rebalancing suggestions and actionable recommendations.
+
+\section{System Overview}
+
+The system consists of two independent processes:
+
+\begin{enumerate}
+  \item \textbf{Backend (Python, port 8000)} --- a FastAPI application
+        that hosts the analytical engine. All business logic, calculations,
+        and data transformations live exclusively here.
+  \item \textbf{Frontend (TypeScript/React, port 5173)} --- a single-page
+        application that calls the backend REST API and renders results.
+        The frontend contains no business logic; it is a pure view layer.
+\end{enumerate}
+
+\begin{tcolorbox}[notebox, title={Design principle}]
+  Every algorithm described in this document lives in
+  \texttt{backend/domain/engine.py}, which is a module of pure functions
+  with no I/O and no framework dependencies. This makes the engine fully
+  testable in isolation and independent of any web framework.
+\end{tcolorbox}
+
+% ============================================================
+\chapter{Input Data Model}
+% ============================================================
+
+\section{The Excel Workbook}
+
+All data enters the system through a single \texttt{.xlsx} workbook
+uploaded by the user. The workbook must contain exactly four sheets.
+Any structural deviation causes a descriptive validation error before
+computation begins.
+
+\subsection{Sheet: \texttt{config}}
+
+A two-column key--value table that parameterises the entire engine.
+No hard-coded constants appear anywhere in the algorithms; all tunable
+values come from this sheet.
+
+\begin{table}[H]
+\centering
+\caption{Configuration parameters and their roles}
+\begin{tabularx}{\linewidth}{@{} l l X @{}}
+\toprule
+\textbf{Key} & \textbf{Example} & \textbf{Role in the engine} \\
+\midrule
+\texttt{today} & 2026-04-24 &
+  The reference date for all temporal computations. Using a
+  configurable date (rather than the system clock) makes the engine
+  fully reproducible: the same file always yields the same results. \\[4pt]
+\texttt{weekly\_capacity\_hrs} & 40 &
+  The maximum hours a CA can deliver in one week. Used as the
+  denominator in every workload-fraction computation. \\[4pt]
+\texttt{catchup\_window\_weeks} & 4 &
+  Number of weeks into which overdue work is compressed. See
+  Section~\ref{sec:effective-window}. \\[4pt]
+\texttt{stale\_threshold\_weeks} & 12 &
+  A phase whose scheduled end is more than this many weeks before
+  \texttt{today} and that has not been closed is flagged as stale
+  and excluded from forecast. \\[4pt]
+\texttt{forecast\_horizon\_weeks} & 78 &
+  How far into the future the engine projects workload ($\approx$18
+  months). \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Sheet: \texttt{phase\_params}}
+
+One row per phase. Defines the intrinsic cost of each qualification phase.
+
+\begin{table}[H]
+\centering
+\caption{Phase parameter columns}
+\begin{tabular}{@{} l l l @{}}
+\toprule
+\textbf{Column} & \textbf{Type} & \textbf{Meaning} \\
+\midrule
+\texttt{phase}         & string  & Phase identifier (index key) \\
+\texttt{duration\_hrs} & float   & Total labour hours the phase requires \\
+\texttt{delai\_weeks}  & float   & Standard calendar duration in weeks \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The five phases in order are:
+\texttt{advanced}, \texttt{digital}, \texttt{static}, \texttt{dynamic},
+\texttt{delivery}.
+
+\subsection{Sheet: \texttt{persons}}
+
+One row per CA (both active and inactive). Key columns:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{} l l @{}}
+\toprule
+\textbf{Column} & \textbf{Meaning} \\
+\midrule
+\texttt{ca\_sheet}   & Unique identifier used as foreign key in \texttt{topics} \\
+\texttt{ca\_display} & Human-readable name shown in the UI \\
+\texttt{active}      & 1 = included in all computations; 0 = ignored \\
+\texttt{n\_topics}   & Pre-computed count of topics assigned to this CA \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Sheet: \texttt{topics}}
+
+The main fact table. One row per topic. Columns include:
+
+\begin{itemize}
+  \item \texttt{id} --- unique integer topic identifier.
+  \item \texttt{ca\_sheet} --- foreign key into \texttt{persons}.
+  \item \texttt{project}, \texttt{topic}, \texttt{supplier} --- descriptive
+        labels.
+  \item \texttt{global\_status} --- the overall qualification lifecycle
+        status of the topic.
+  \item For each of the five phases $p \in \{\texttt{advanced},\ldots\}$:
+    \begin{itemize}
+      \item \texttt{$p$\_start}, \texttt{$p$\_end} --- scheduled date range
+            (may be blank if the phase is not yet planned).
+      \item \texttt{$p$\_status} --- current execution status for that
+            phase.
+    \end{itemize}
+\end{itemize}
+
+This gives $3 \times 5 = 15$ phase-specific columns per row, plus
+general columns, yielding approximately 20 columns per topic.
+
+\subsection{Parsing and Validation}
+
+The function \texttt{parse\_workbook(bytes) $\to$ DataBundle} in
+\texttt{backend/domain/loader.py} performs:
+
+\begin{enumerate}
+  \item Load all four sheets with \texttt{openpyxl}.
+  \item Assert all required sheets and columns are present.
+  \item Parse the 10 date columns in \texttt{topics} directly to
+        \texttt{pd.Timestamp} objects.
+  \item Index \texttt{phase\_params} by phase name for $O(1)$ lookup.
+  \item Coerce \texttt{config} values to native Python scalars or
+        \texttt{pd.Timestamp}.
+\end{enumerate}
+
+The result is a \texttt{DataBundle} dataclass with four fields:
+\texttt{topics}, \texttt{phase\_params}, \texttt{persons}, \texttt{config}.
+This is the single immutable input to every downstream computation.
+
+% ============================================================
+\chapter{The Analytical Engine}
+% ============================================================
+
+\section{Introduction}
+
+The engine transforms a \texttt{DataBundle} into workload fractions
+through a pipeline of three major stages:
+
+\begin{enumerate}
+  \item \textbf{Phase instance construction} --- flatten the topic table
+        into one row per (CA, topic, phase) triple, applying temporal
+        adjustments and classification flags.
+  \item \textbf{Workload forecast} --- aggregate phase instances into
+        a $(W \times C)$ matrix of weekly workload fractions over the
+        forecast horizon, where $W$ is the number of weeks and $C$ is
+        the number of active CAs.
+  \item \textbf{Higher-level outputs} --- derive KPIs, smoothing
+        suggestions, and prioritised recommendations from the forecast
+        matrix.
+\end{enumerate}
+
+All three stages are pure deterministic functions. Given the same
+\texttt{DataBundle} they always produce the same output.
+
+% ────────────────────────────────────────────────────────────
+\section{Stage 1 --- Phase Instance Construction}
+\label{sec:phase-instances}
+% ────────────────────────────────────────────────────────────
+
+\subsection{Overview}
+
+\texttt{build\_phase\_instances(bundle) $\to$ DataFrame}
+
+The topics sheet stores dates in a wide format (one topic per row,
+phases in columns). The first step \textit{normalises} this into a long
+format: one row per active-CA $\times$ topic $\times$ phase triple.
+Each row represents an atomic unit of work and carries all the
+information needed to place it on the forecast timeline.
+
+\subsection{Phase Intensity (VH)}
+\label{sec:vh}
+
+Before computing any windows, the engine derives the \textbf{weekly
+workload intensity} of each phase, called $\vh$.
+
+\begin{tcolorbox}[defbox, title={Definition: Workload Intensity $\vh$}]
+\[
+  \vh_p \;=\; \frac{\texttt{duration\_hrs}_p}{\texttt{delai\_weeks}_p}
+\]
+where $p$ denotes one of the five qualification phases.
+\end{tcolorbox}
+
+$\vh_p$ expresses how many hours per week a CA must spend on phase $p$
+while it is active. It is constant per phase type, independent of
+any specific topic or date.
+
+\textbf{Why this formulation?}
+The system models each phase as a uniform workload rectangle: $\vh_p$
+hours per week, sustained over the effective duration of the phase.
+This is an engineering approximation that avoids speculative
+time-phasing of individual tasks. It is well-suited to planning
+horizons of several months, where daily granularity would be spurious.
+
+\begin{table}[H]
+\centering
+\caption{Example phase parameters and resulting VH values (illustrative)}
+\begin{tabular}{@{} l r r r @{}}
+\toprule
+\textbf{Phase} & \textbf{duration\_hrs} & \textbf{delai\_weeks} & $\vh$ (h/week) \\
+\midrule
+advanced  & 24 & 4 & 6.0 \\
+digital   & 16 & 2 & 8.0 \\
+static    & 40 & 6 & 6.7 \\
+dynamic   & 32 & 4 & 8.0 \\
+delivery  &  8 & 1 & 8.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The Effective Window}
+\label{sec:effective-window}
+
+A key challenge is that many phases in a real portfolio are overdue:
+their scheduled end date has already passed, yet the work has not
+been completed or formally closed. Simply ignoring these phases
+would undercount the actual current workload. But placing them at
+their original (past) dates would also be wrong, since the work will
+be done now, not in the past.
+
+The engine resolves this with the \textbf{effective window} concept.
+Given the scheduled start $t_s$ and end $t_e$ of a phase instance,
+and a reference date $t_0$ (``today''), the effective window
+$[t_s^*, t_e^*]$ is computed as follows.
+
+\begin{tcolorbox}[defbox, title={Definition: Effective Window}]
+Let $\Delta_c$ denote the catchup window in weeks
+(\texttt{catchup\_window\_weeks}).
+
+\medskip
+\textbf{Effective start:}
+\[
+  t_s^* \;=\; \max(t_0,\; t_s)
+\]
+If $t_s$ is absent, $t_s^* = t_0$. This ensures that future
+phases begin no earlier than scheduled, while past or present
+phases begin immediately from today.
+
+\medskip
+\textbf{Catchup end:}
+\[
+  t_c \;=\; t_s^* + \Delta_c \text{ weeks}
+\]
+
+\textbf{Effective end:}
+\[
+  t_e^* \;=\; \max(t_c,\; t_e)
+\]
+If $t_e$ is absent, $t_e^* = t_c$.
+\end{tcolorbox}
+
+\textbf{Interpretation of these rules:}
+
+\begin{enumerate}
+  \item If a phase is \textit{future} ($t_s \geq t_0$): the effective
+        window equals the scheduled window (possibly extended to $t_c$
+        if the scheduled duration is shorter than $\Delta_c$).
+
+  \item If a phase is \textit{overdue} ($t_s < t_0$ or $t_e < t_0$):
+        the effective start collapses to today, and the work is spread
+        over the catchup window $\Delta_c = 4$ weeks starting from today.
+        This models the operational reality that overdue work
+        becomes urgent and must be completed in the near term.
+
+  \item The $\max(t_c, t_e)$ in the effective end ensures that a phase
+        that is both overdue \textit{and} has a far future end date is
+        not artificially compressed.
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\begin{tcolorbox}[colback=gray!8, colframe=gray!50, sharp corners]
+\small
+\begin{verbatim}
+  Case 1 (future phase):
+  ─────────────────────────────────────────────────────
+  t0          ts          te
+  |           [===PHASE===]
+              t_s*        t_e* (= te if te > ts* + Δ_c)
+
+  Case 2 (overdue phase, te < t0):
+  ─────────────────────────────────────────────────────
+       te   t0
+  [====]    |
+            [==CATCHUP==]
+            t_s*         t_e* = t_s* + Δ_c
+
+  Case 3 (started, not yet ended, t_s < t0 < t_e):
+  ─────────────────────────────────────────────────────
+       ts   t0            te
+  [====|====|=============]
+            t_s*  max(t_s* + Δ_c, te)
+                          t_e*
+\end{verbatim}
+\end{tcolorbox}
+\caption{Effective window construction for the three cases}
+\end{figure}
+
+\subsection{Stale Phase Detection}
+\label{sec:stale}
+
+A phase that ended far in the past and was never formally closed is
+likely an administrative artefact rather than real pending work.
+Including it would inflate every CA's workload permanently.
+
+\begin{tcolorbox}[defbox, title={Definition: Stale Phase}]
+A phase instance is \textbf{stale} if and only if:
+\[
+  t_e < t_0 - \Delta_s \;\text{ weeks}
+  \quad \text{and} \quad
+  \texttt{status} \notin \{\texttt{VAL},\, \texttt{CANCELED}\}
+\]
+where $\Delta_s$ = \texttt{stale\_threshold\_weeks} (currently 12 weeks).
+\end{tcolorbox}
+
+Stale phases are retained in the dataset with an \texttt{is\_stale = True}
+flag but are \textit{excluded from all workload computations}.
+They remain visible in the CA detail view so a manager can investigate
+them as administrative tasks, without them polluting the forecast.
+
+\begin{tcolorbox}[notebox, title={Note on VAL and CANCELED}]
+Phases with status \texttt{VAL} (validated, work completed) or
+\texttt{CANCELED} are excluded unconditionally---regardless of their
+dates---from every workload computation. These statuses represent
+definitively closed work.
+\end{tcolorbox}
+
+\subsection{Active-Now Classification}
+
+After building the effective window for every phase instance, the engine
+classifies each row with a boolean \texttt{is\_active\_now} flag.
+
+\begin{tcolorbox}[defbox, title={Definition: Active-Now Phase}]
+Let $[w_0, w_1)$ be the current week interval:
+\[
+  w_0 = \text{Monday of the week containing } t_0,
+  \qquad
+  w_1 = w_0 + 7 \text{ days}
+\]
+A phase instance is \textbf{active now} if all four conditions hold:
+\begin{align*}
+  &(1)\quad \texttt{status} \notin \{\texttt{VAL}, \texttt{CANCELED}\} \\
+  &(2)\quad \texttt{is\_stale} = \texttt{False} \\
+  &(3)\quad t_s^* < w_1 \\
+  &(4)\quad t_e^* \geq w_0
+\end{align*}
+\end{tcolorbox}
+
+Conditions (3) and (4) are the standard interval-overlap test:
+the effective window $[t_s^*, t_e^*]$ overlaps with $[w_0, w_1)$
+if and only if $t_s^* < w_1$ and $t_e^* \geq w_0$.
+
+\texttt{is\_active\_now} drives the KPI ``number of active topics per CA''
+and is the basis for identifying which topics to consider for transfer
+in the smoothing algorithm.
+
+% ────────────────────────────────────────────────────────────
+\section{Stage 2 --- Workload Forecast}
+\label{sec:forecast}
+% ────────────────────────────────────────────────────────────
+
+\subsection{Weekly Workload Fraction}
+
+\texttt{forecast\_weekly(bundle, phase\_instances) $\to$ DataFrame}
+
+The forecast is a matrix $\mathbf{W} \in \mathbb{R}^{W \times C}$ where:
+\begin{itemize}
+  \item $W = H + 1$ rows, one per week ($H$ = \texttt{forecast\_horizon\_weeks}).
+        Week indices are the Mondays $w_0, w_1, \ldots, w_H$.
+  \item $C$ columns, one per active CA, sorted lexicographically.
+  \item Each element $\mathbf{W}_{i,c}$ is a \textbf{workload fraction},
+        where 1.0 represents exactly full capacity for CA $c$ during week $i$.
+\end{itemize}
+
+\begin{tcolorbox}[defbox, title={Definition: Weekly Workload Fraction}]
+Let $\mathcal{P}(c, i)$ be the set of non-stale, non-excluded phase
+instances assigned to CA $c$ whose effective window overlaps with week
+$[w_i,\, w_i + 7\text{ days})$:
+\[
+  \mathcal{P}(c, i) = \bigl\{
+    p \in \Pi :
+    \texttt{ca\_id}(p) = c,\;
+    t_s^*(p) < w_i + 7\text{d},\;
+    t_e^*(p) \geq w_i
+  \bigr\}
+\]
+where $\Pi$ excludes all stale or definitively closed instances.
+
+The workload fraction is:
+\[
+  \boxed{
+    \mathbf{W}_{i,c} \;=\;
+    \frac{1}{\texttt{capacity}} \sum_{p \in \mathcal{P}(c,\,i)} \vh_p
+  }
+\]
+\end{tcolorbox}
+
+\textbf{What this formula computes.}
+For each week $i$ and each CA $c$, the engine sums the hourly intensity
+$\vh_p$ of every phase that is simultaneously assigned to CA $c$ and
+overlapping that week's calendar interval. Dividing by the weekly capacity
+(40 h) converts the raw sum of hours per week into a dimensionless
+fraction, where 1.0 means the CA is working exactly at full capacity.
+
+\textbf{Values above 1.0} are structurally possible and expected: a CA
+with three overlapping phases each contributing 15 h/week would produce
+$\mathbf{W}_{i,c} = 45/40 = 1.125$, indicating an overload of 12.5\%.
+
+\subsection{Vectorised Implementation}
+
+The naive double-loop over weeks and phase instances would be $O(WN)$
+with two passes over the data. The engine uses NumPy broadcasting to
+compute the full $(W \times N)$ overlap boolean matrix in a single
+vectorised operation:
+
+\begin{lstlisting}[language=Python, caption={Vectorised overlap computation}]
+# eff_starts, eff_ends : shape (N,)  -- one per phase instance
+# ws_np, we_np         : shape (W,)  -- one per week boundary
+
+overlap = (
+    (eff_starts[np.newaxis, :] < we_np[:, np.newaxis])   # (W, N)
+  & (eff_ends  [np.newaxis, :] >= ws_np[:, np.newaxis])
+)
+# overlap[i, j] = True iff phase j overlaps week i
+\end{lstlisting}
+
+Broadcasting inserts a new axis so NumPy compares every week against
+every phase instance in one operation. For 79 weeks and $\sim$2000 active
+phase instances this produces a $79 \times 2000$ boolean matrix
+in a single pass. Summation over CA is then a grouped aggregation.
+
+\subsection{Monthly Aggregation}
+
+\texttt{forecast\_monthly(weekly\_df) $\to$ DataFrame}
+
+The monthly view averages the weekly fractions over each calendar month:
+
+\[
+  \mathbf{W}^{\text{month}}_{m,c}
+  \;=\;
+  \frac{1}{|\mathcal{W}_m|}
+  \sum_{i \in \mathcal{W}_m} \mathbf{W}_{i,c}
+\]
+
+where $\mathcal{W}_m$ is the set of week indices whose Monday falls
+in calendar month $m$. This is implemented as a single pandas
+\texttt{resample("MS").mean()} call, which groups weeks by their
+Month-Start timestamp and averages across the group.
+
+The monthly view smooths short-term noise (e.g.\ a single heavy week)
+and gives management a strategic, high-level visibility of workload
+trends over the 18-month horizon.
+
+\subsection{Week Series Generation}
+
+All week indices are anchored to the Monday of the week containing
+\texttt{today}, ensuring that row 0 of $\mathbf{W}$ always corresponds
+to the \textit{current} week, regardless of which day the file is loaded.
+
+\[
+  w_0 = t_0 - (\text{weekday}(t_0) \bmod 7) \text{ days}
+  \qquad
+  w_i = w_0 + 7i \text{ days},\quad i = 0, 1, \ldots, H
+\]
+
+% ────────────────────────────────────────────────────────────
+\section{Stage 3A --- Key Performance Indicators}
+\label{sec:kpis}
+% ────────────────────────────────────────────────────────────
+
+From the forecast matrix and phase instances, the engine derives a set
+of KPIs for the overview dashboard.
+
+\begin{table}[H]
+\centering
+\caption{Computed KPIs}
+\begin{tabularx}{\linewidth}{@{} l X @{}}
+\toprule
+\textbf{KPI} & \textbf{Formula / derivation} \\
+\midrule
+\texttt{total\_active\_topics} &
+  $|\{topic\_id : \exists p, \texttt{is\_active\_now}(p) = \texttt{True}\}|$
+  --- count of distinct topics with at least one phase active this week. \\[6pt]
+\texttt{total\_active\_cas} &
+  $C$ --- number of columns in $\mathbf{W}$ (always equals the number
+  of CAs with \texttt{active}=1 in \texttt{persons}). \\[6pt]
+\texttt{avg\_workload} &
+  $\bar{w}_0 = \frac{1}{C} \sum_c \mathbf{W}_{0,c}$
+  --- mean workload fraction across all CAs for the current week. \\[6pt]
+\texttt{max\_workload} &
+  $\max_c \mathbf{W}_{0,c}$ --- workload of the most loaded CA
+  this week. \\[6pt]
+\texttt{max\_workload\_ca} &
+  $\arg\max_c \mathbf{W}_{0,c}$ --- identifier of that CA. \\[6pt]
+\texttt{peak\_workload} (per CA) &
+  $\max_i \mathbf{W}_{i,c}$ --- highest workload fraction for CA $c$
+  over the entire forecast horizon. \\[6pt]
+\texttt{peak\_week} (per CA) &
+  $\arg\max_i \mathbf{W}_{i,c}$ --- the Monday date of that peak. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Active topics per CA.}
+A topic counts as active for a CA when at least one of its phases is
+currently active-now for that CA. This is a distinct-count of
+\texttt{topic\_id} in the subset of rows where \texttt{is\_active\_now =
+True} and \texttt{ca\_id = c}.
+
+% ────────────────────────────────────────────────────────────
+\section{Stage 3B --- Workload Smoothing}
+\label{sec:smoothing}
+% ────────────────────────────────────────────────────────────
+
+\subsection{Problem Statement}
+
+When one or more CAs are overloaded this week
+($\mathbf{W}_{0,c} > 1.0$), the engine proposes a concrete transfer:
+move one specific topic from the overloaded CA to the CA with the
+most available capacity that can absorb it.
+
+The algorithm operates on $\mathbf{w}_0 = \mathbf{W}_{0,\cdot}$
+(the current-week row of the forecast matrix), treated as a mutable
+working copy to simulate the effect of sequential transfers.
+
+\subsection{Algorithm}
+
+\begin{tcolorbox}[defbox, title={Smoothing Algorithm}]
+\textbf{Input:} Working vector $\mathbf{w} \in \mathbb{R}^C$
+(current-week workload fractions), phase instances, capacity $K$.
+
+\medskip
+\textbf{Step 1.} Identify overloaded CAs:
+\[
+  \mathcal{O} = \{ c : \mathbf{w}_c > 1.0 \}
+  \quad \text{sorted descending by } \mathbf{w}_c
+\]
+
+\medskip
+\textbf{Step 2.} For each $c \in \mathcal{O}$ (if $\mathbf{w}_c \leq 1.0$
+after a prior step, skip):
+
+\quad \textbf{2a.} Find all topics with at least one active-now phase
+assigned to $c$. For each such topic $\tau$, compute its load
+contribution:
+\[
+  \delta_\tau \;=\;
+  \frac{1}{K} \sum_{p \in \Pi(c,\tau)} \vh_p
+\]
+where $\Pi(c, \tau)$ is the set of active-now phases for CA $c$ and
+topic $\tau$. Select the topic with the highest contribution:
+\[
+  \tau^* = \arg\max_\tau \delta_\tau
+\]
+
+\quad \textbf{2b.} Find the best receiver among all other active CAs:
+\[
+  \mathcal{R}^* = \{c' \neq c : \mathbf{w}_{c'} + \delta_{\tau^*} \leq 1.0\}
+\]
+If $\mathcal{R}^* = \emptyset$, relax the constraint:
+\[
+  \mathcal{R}^* = \{c' \neq c : \mathbf{w}_{c'} + \delta_{\tau^*} \leq 1.2\}
+\]
+If still empty, skip this CA (no feasible transfer).
+
+\quad \textbf{2c.} Select receiver:
+\[
+  c^* = \arg\min_{c' \in \mathcal{R}^*} \mathbf{w}_{c'}
+\]
+
+\quad \textbf{2d.} Record suggestion and update the working vector:
+\[
+  \mathbf{w}_c \;\leftarrow\; \mathbf{w}_c - \delta_{\tau^*}
+  \qquad
+  \mathbf{w}_{c^*} \;\leftarrow\; \mathbf{w}_{c^*} + \delta_{\tau^*}
+\]
+\end{tcolorbox}
+
+\subsection{Output}
+
+Each suggestion contains:
+\begin{itemize}
+  \item Source and destination CA identifiers and display names.
+  \item The topic ID, name, and project.
+  \item An \textbf{impact object} showing the before/after workload
+        fractions for both the source and the destination CA:
+        $(\mathbf{w}_c^{\text{before}},\; \mathbf{w}_c^{\text{after}},\;
+           \mathbf{w}_{c^*}^{\text{before}},\; \mathbf{w}_{c^*}^{\text{after}})$.
+\end{itemize}
+
+\subsection{Design Choices}
+
+\textbf{One suggestion per overloaded CA.}
+The algorithm proposes one transfer per overloaded CA per run. This
+intentional constraint prevents the output from overwhelming the manager
+with a complex multi-step rebalancing plan. One change at a time is
+easier to evaluate and implement.
+
+\textbf{Greedy selection of the heaviest topic.}
+Transferring the highest-load topic maximises the immediate load
+reduction per transfer. A branch-and-bound approach would find the
+globally optimal transfer sequence, but given the small team size
+($C \leq 14$) and the qualitative nature of the recommendations,
+a greedy approach is entirely adequate.
+
+\textbf{1.2 relaxed bound.}
+If no receiver can stay under 1.0 after the transfer, the engine
+relaxes to 1.2 (20\% overload). This avoids producing no suggestions
+in situations where every CA is heavily loaded---in such cases, even
+a partial redistribution is useful to present to the manager.
+
+\textbf{Stateful simulation.}
+The working vector $\mathbf{w}$ is updated after each transfer. This
+means suggestions are consistent: if CA~A transfers to CA~B, the
+subsequent evaluation of CA~D will see B's updated load and will not
+try to overload B again.
+
+% ────────────────────────────────────────────────────────────
+\section{Stage 3C --- Decision Engine}
+\label{sec:decisions}
+% ────────────────────────────────────────────────────────────
+
+\subsection{Overview}
+
+The decision engine translates numerical workload fractions into
+prioritised, plain-language action recommendations. Each recommendation
+has a priority level and a target (either the whole team or a specific CA).
+
+\subsection{Priority Classification}
+
+\begin{tcolorbox}[defbox, title={Priority Rules}]
+Let $\bar{w}_0 = \frac{1}{C}\sum_c \mathbf{W}_{0,c}$ be the team average
+and let $\hat{w}_c = \max_i \mathbf{W}_{i,c}$ be the peak workload
+for CA $c$.
+
+\medskip
+\textbf{Team-level:}
+\[
+  \text{priority} = \begin{cases}
+    \textcolor{highred}{\textbf{HIGH}}   & \text{if } \bar{w}_0 > 1.0 \\
+    \textcolor{medorange}{\textbf{MEDIUM}} & \text{if } 0.85 < \bar{w}_0 \leq 1.0 \\
+    \text{(no team alert)} & \text{otherwise}
+  \end{cases}
+\]
+
+\medskip
+\textbf{Per-CA:}
+\[
+  \text{priority}(c) = \begin{cases}
+    \textcolor{highred}{\textbf{HIGH}}     & \text{if } \mathbf{W}_{0,c} > 1.0 \\
+    \textcolor{medorange}{\textbf{MEDIUM}} & \text{if } \mathbf{W}_{0,c} \leq 1.0
+                                             \text{ but } \hat{w}_c > 1.0 \\
+    \textcolor{lowgreen}{\textbf{LOW}}     & \text{otherwise}
+  \end{cases}
+\]
+\end{tcolorbox}
+
+\textbf{HIGH (current overload)} signals that action is required now,
+before the week is over.
+
+\textbf{MEDIUM (forecast overload)} signals that the current week
+is manageable, but a peak is predicted within the 78-week horizon.
+The recommendation includes the exact date of the predicted peak.
+
+\textbf{LOW} confirms that the CA is within safe capacity bounds
+throughout the entire forecast horizon.
+
+\subsection{Sorting}
+
+The output list is sorted by priority order:
+$\text{HIGH} \prec \text{MEDIUM} \prec \text{LOW}$,
+ensuring the most urgent items appear first in the UI without any
+client-side filtering.
+
+% ============================================================
+\chapter{API Layer}
+% ============================================================
+
+\section{Architecture}
+
+The HTTP API is built with \textbf{FastAPI}, using asynchronous request
+handling and automatic JSON serialisation via \textbf{Pydantic v2}
+response models. All routes are mounted under the \texttt{/api} prefix.
+Cross-Origin Resource Sharing (CORS) is configured to accept requests
+from the Vite development server at \texttt{localhost:5173}.
+
+\section{Server-Side State and Lazy Caching}
+\label{sec:state}
+
+The application is a single-user local tool. Rather than storing the
+dataset in a database or on disk, the engine keeps a \textbf{module-level
+singleton} in \texttt{backend/api/state.py}.
+
+After a successful upload, the singleton holds:
+\begin{itemize}
+  \item \texttt{\_bundle} --- the \texttt{DataBundle} (parsed workbook data).
+  \item \texttt{\_phase\_instances} --- the result of
+        \texttt{build\_phase\_instances}, computed once and cached.
+  \item \texttt{\_weekly\_forecast} --- the result of
+        \texttt{forecast\_weekly}, computed once and cached.
+  \item \texttt{\_monthly\_forecast} --- the result of
+        \texttt{forecast\_monthly}, computed once and cached.
+\end{itemize}
+
+All four caches are reset to \texttt{None} on every new upload, forcing
+recomputation from fresh data. Each derived cache is computed lazily:
+only on the first API call that requires it.
+
+\begin{tcolorbox}[notebox, title={Why lazy caching?}]
+  Phase instances and the weekly forecast are the two most expensive
+  computations (${\sim}300\,\text{ms}$ combined for 589 topics). By caching
+  both after the first request, all subsequent endpoint calls are
+  served in milliseconds from pre-computed in-memory DataFrames.
+  Upload is the only operation that incurs the full computation cost.
+\end{tcolorbox}
+
+\section{Endpoint Reference}
+
+\begin{table}[H]
+\centering
+\caption{API endpoints}
+\begin{tabularx}{\linewidth}{@{} l l X @{}}
+\toprule
+\textbf{Method} & \textbf{Path} & \textbf{Description} \\
+\midrule
+\texttt{GET}  & \texttt{/api/health}    &
+  Liveness check. Returns \texttt{\{"status":"ok"\}}. \\[4pt]
+\texttt{POST} & \texttt{/api/upload}    &
+  Accepts an \texttt{.xlsx} file (multipart/form-data), parses it,
+  stores the bundle in the singleton, and returns summary metadata. \\[4pt]
+\texttt{GET}  & \texttt{/api/overview}  &
+  Returns team-level KPIs and a heatmap of workload fractions for
+  the next $N$ weeks (\texttt{?weeks=26} default, max 78). \\[4pt]
+\texttt{GET}  & \texttt{/api/team}      &
+  Returns one row per active CA with current workload, peak workload,
+  peak week, and active topic count. \\[4pt]
+\texttt{GET}  & \texttt{/api/ca/\{id\}} &
+  Returns full detail for one CA: individual forecast series, list
+  of active phases with their VH, and all assigned topics. \\[4pt]
+\texttt{GET}  & \texttt{/api/forecast}  &
+  Returns the full forecast matrix. Supports \texttt{?view=weekly}
+  (default) and \texttt{?view=monthly}. \\[4pt]
+\texttt{GET}  & \texttt{/api/smoothing} &
+  Runs the smoothing algorithm and returns the list of transfer
+  suggestions. \\[4pt]
+\texttt{GET}  & \texttt{/api/decisions} &
+  Runs the decision engine and returns prioritised recommendations. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Error Handling}
+
+\begin{itemize}
+  \item \texttt{HTTP 400} --- the uploaded file is not a \texttt{.xlsx} file.
+  \item \texttt{HTTP 422} --- the workbook passes the format check but
+        fails structural validation (missing sheet, missing column, etc.).
+        The detail field contains a human-readable description.
+  \item \texttt{HTTP 424} --- any analytical endpoint is called before a
+        file has been uploaded. The response body explicitly instructs
+        the client to upload first.
+\end{itemize}
+
+\section{Response Schemas}
+
+All responses are typed with Pydantic v2 models, which provide:
+\begin{itemize}
+  \item Automatic JSON serialisation with field-level type coercion.
+  \item Auto-generated OpenAPI documentation at \texttt{/docs}.
+  \item Runtime validation that engine output matches the declared schema
+        before it reaches the client.
+\end{itemize}
+
+% ============================================================
+\chapter{Data Flow Summary}
+% ============================================================
+
+Figure~\ref{fig:dataflow} traces the complete data flow from user action
+to rendered result.
+
+\begin{figure}[H]
+\centering
+\begin{tcolorbox}[colback=gray!7, colframe=gray!50, sharp corners]
+\small\ttfamily
+\begin{verbatim}
+  User uploads wtb_data.xlsx
+        |
+        v
+  parse_workbook(bytes) --> DataBundle
+        |
+        v
+  build_phase_instances(bundle)
+    for each active CA x topic x phase:
+      - compute VH = duration_hrs / delai_weeks
+      - compute effective window [t_s*, t_e*]
+      - classify is_stale, is_active_now
+        |
+        v
+  forecast_weekly(bundle, phase_instances)
+    for each week i in [w_0 ... w_H]:
+      W[i, c] = sum(VH_p for p overlapping week i) / capacity
+        |
+        +--------> forecast_monthly  = resample("MS").mean()
+        |
+        +--------> n_active_topics   = count distinct active topics per CA
+        |
+        +--------> peak_analysis     = max over time axis
+        |
+        +--------> smoothing_suggestions (greedy transfer algorithm)
+        |
+        +--------> decisions (threshold-based priority classifier)
+        |
+        v
+  FastAPI serialises via Pydantic --> JSON response to React frontend
+\end{verbatim}
+\end{tcolorbox}
+\caption{End-to-end data flow}
+\label{fig:dataflow}
+\end{figure}
+
+% ============================================================
+\chapter{Testing}
+% ============================================================
+
+\section{Test Structure}
+
+The backend test suite uses \textbf{pytest} and is organised in two
+files under \texttt{backend/tests/}:
+
+\begin{itemize}
+  \item \texttt{test\_loader.py} --- validates the parsing layer:
+        sheet detection, column presence, date coercion, config extraction.
+  \item \texttt{test\_engine.py} --- validates the engine layer with
+        25 unit tests across all major functions.
+\end{itemize}
+
+\section{Fixture Strategy}
+
+All engine tests share a single \texttt{bundle} pytest fixture defined
+in \texttt{conftest.py}, which loads the real
+\texttt{docs/wtb\_data.xlsx} workbook. This means:
+\begin{enumerate}
+  \item Tests run against the actual production data schema, not a
+        synthetic mock.
+  \item Any structural change to the workbook is immediately caught.
+  \item No test-specific data setup is required; the fixture is
+        constructed once per test session.
+\end{enumerate}
+
+\section{Key Invariants Verified}
+
+\begin{table}[H]
+\centering
+\caption{Selected test invariants}
+\begin{tabularx}{\linewidth}{@{} l X @{}}
+\toprule
+\textbf{Function} & \textbf{Invariant tested} \\
+\midrule
+\texttt{build\_phase\_instances} &
+  No inactive CA appears in output. \\
+  &
+  Every row has at least one non-null scheduled date. \\
+  &
+  Active-now rows never have excluded status. \\
+  &
+  Stale rows are never also active-now. \\
+  &
+  $t_s^* \geq t_0$ for all rows. \\
+  &
+  $t_e^* \geq t_s^*$ for all rows. \\
+  &
+  $\vh_p = \texttt{duration\_hrs}_p / \texttt{delai\_weeks}_p$ exactly. \\[4pt]
+\texttt{forecast\_weekly} &
+  Shape is $(H + 1) \times C$. \\
+  &
+  Columns match exactly the set of active CA identifiers. \\
+  &
+  All values are $\geq 0$. \\
+  &
+  All week index timestamps are Mondays (\texttt{weekday()} = 0). \\[4pt]
+\texttt{forecast\_monthly} &
+  All index timestamps have \texttt{day} = 1 (month-start). \\[4pt]
+\texttt{decisions} &
+  Priority values are in $\{\texttt{HIGH}, \texttt{MEDIUM}, \texttt{LOW}\}$. \\
+  &
+  Output is sorted HIGH $\prec$ MEDIUM $\prec$ LOW. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+All 25 tests pass on the production dataset, confirming that every
+algorithm invariant holds on real data.
+
+% ============================================================
+\chapter{Operational Notes}
+% ============================================================
+
+\section{Reproducibility}
+
+The engine is fully reproducible by design. The reference date
+\texttt{today} is read from the workbook's \texttt{config} sheet,
+not from the system clock. Given the same \texttt{.xlsx} file,
+any run on any machine at any time produces identical results.
+This is essential for audit trails and management reporting.
+
+\section{Capacity Interpretation}
+
+A workload fraction of 1.0 represents one CA working at full capacity
+(40 h/week). Values above 1.0 are analytically valid and expected for
+overloaded CAs. The system does not cap these values; it reports them
+as-is and flags them as requiring action.
+
+\section{Catchup Window Sensitivity}
+
+The catchup window $\Delta_c$ has the strongest effect on current-week
+workloads. At $\Delta_c = 4$ weeks, an overdue phase contributes
+$\vh_p \times 1$ to the current week's load. Increasing $\Delta_c$
+spreads overdue work over more weeks and reduces current peaks;
+decreasing it concentrates overdue work and increases peaks. This
+parameter should be tuned to reflect the team's real operating cadence.
+
+\section{Extensibility}
+
+Because the engine is a set of pure functions with a well-defined input
+(\texttt{DataBundle}) and output (DataFrames and plain dicts), it can
+be extended without touching the API layer:
+
+\begin{itemize}
+  \item New phases: add rows to \texttt{phase\_params} and columns to
+        \texttt{topics}; the engine loops over \texttt{PHASES} dynamically.
+  \item New KPIs: add a new function to \texttt{engine.py} and call it
+        from the relevant route.
+  \item Alternative smoothing strategies (e.g.\ optimisation-based):
+        replace or extend \texttt{smoothing\_suggestions} without
+        modifying any other component.
+\end{itemize}
+
+% ============================================================
+\chapter*{Glossary}
+\addcontentsline{toc}{chapter}{Glossary}
+% ============================================================
+
+\begin{description}[leftmargin=3.5cm, labelwidth=3cm]
+  \item[CA] Certification Agent --- a person responsible for qualifying
+        a set of topics.
+  \item[Topic] A supplier component or product that must go through
+        the five-phase qualification process.
+  \item[Phase] One of five sequential qualification steps:
+        \textit{advanced, digital, static, dynamic, delivery}.
+  \item[$\vh$] Weekly workload intensity of a phase, in hours per week.
+        Defined as $\texttt{duration\_hrs} / \texttt{delai\_weeks}$.
+  \item[Effective window] The $[t_s^*, t_e^*]$ interval used for workload
+        attribution, accounting for overdue phases via the catchup window.
+  \item[Catchup window] The $\Delta_c$-week period into which overdue
+        work is compressed for forecast purposes.
+  \item[Stale phase] A phase that ended more than $\Delta_s$ weeks ago
+        without being formally closed; excluded from all forecasts.
+  \item[Workload fraction] $\mathbf{W}_{i,c}$, the ratio of weekly hours
+        demanded from CA $c$ to their capacity. 1.0 = full capacity.
+  \item[DataBundle] The Python dataclass holding the four parsed DataFrames
+        that flow through the engine.
+  \item[VAL / CANCELED] Terminal phase statuses; work is definitively
+        closed and excluded from all computations.
+\end{description}
+
+\end{document}
