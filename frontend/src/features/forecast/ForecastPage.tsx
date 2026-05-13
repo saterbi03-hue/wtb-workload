@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   LineChart, Line, BarChart, Bar,
@@ -52,6 +52,8 @@ export function ForecastPage() {
   const [view, setView] = useState<'weekly' | 'monthly'>('weekly')
   const [selectedCas, setSelectedCas] = useState<string[]>([])
   const [hovered, setHovered] = useState<string | null>(null)
+  const [cwFrom, setCwFrom] = useState<string>('')
+  const [cwTo, setCwTo] = useState<string>('')
 
   const persons = uploadData?.persons ?? []
 
@@ -59,6 +61,14 @@ export function ForecastPage() {
     queryKey: ['forecast', view, selectedCas],
     queryFn: () => fetchForecast(view, selectedCas.length ? selectedCas : undefined),
   })
+
+  // Initialise la fenêtre CW depuis la première réponse API
+  useEffect(() => {
+    if (data?.labels?.length && view === 'weekly') {
+      setCwFrom((p) => p || data.labels[0])
+      setCwTo((p) => p || data.labels[data.labels.length - 1])
+    }
+  }, [data, view])
 
   function toggleCa(caId: string) {
     setSelectedCas((prev) =>
@@ -92,22 +102,38 @@ export function ForecastPage() {
     ? horizons.sort((a, b) => a - b)[Math.floor(horizons.length / 2)]
     : null
 
-  // Build Recharts data
+  // Build full Recharts data
   const chartData = data.labels.map((label, i) => {
     const point: Record<string, string | number> = { label }
     data.series.forEach((s) => { point[s.ca_id] = s.values[i] ?? 0 })
     return point
   })
+
+  // CW window: slice by index (weekly only)
+  const fromIdx = view === 'weekly' && cwFrom
+    ? Math.max(0, data.labels.indexOf(cwFrom))
+    : 0
+  const toIdx = view === 'weekly' && cwTo
+    ? Math.max(fromIdx, data.labels.indexOf(cwTo) >= 0 ? data.labels.indexOf(cwTo) : data.labels.length - 1)
+    : data.labels.length - 1
+  const windowedData = view === 'weekly' ? chartData.slice(fromIdx, toIdx + 1) : chartData
+
   const sampled = view === 'weekly'
-    ? chartData.filter((_, i) => i % 2 === 0)
+    ? windowedData.filter((_, i) => i % 2 === 0)
     : chartData
 
-  // Reliable horizon label index (sampled)
+  // Horizon label from full data, shown only if inside current window
   const sampledHorizonIdx = medianHorizon !== null
     ? Math.floor(medianHorizon / (view === 'weekly' ? 2 : 1))
     : null
-  const horizonLabel = sampledHorizonIdx !== null
-    ? sampled[sampledHorizonIdx]?.label ?? null
+  const fullSampled = view === 'weekly'
+    ? chartData.filter((_, i) => i % 2 === 0)
+    : chartData
+  const rawHorizonLabel = sampledHorizonIdx !== null
+    ? (fullSampled[sampledHorizonIdx]?.label ?? null)
+    : null
+  const horizonLabel = rawHorizonLabel && sampled.some((d) => d.label === rawHorizonLabel)
+    ? rawHorizonLabel
     : null
 
   return (
@@ -131,6 +157,7 @@ export function ForecastPage() {
 
       {/* Controls */}
       <div className="flex flex-wrap gap-4 items-start">
+        {/* View toggle */}
         <div className="flex gap-2">
           <Button size="sm" variant={view === 'weekly' ? 'default' : 'outline'} onClick={() => setView('weekly')}>
             Hebdomadaire
@@ -139,6 +166,28 @@ export function ForecastPage() {
             Mensuel
           </Button>
         </div>
+
+        {/* CW window selector (weekly only) */}
+        {view === 'weekly' && data.labels.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500 shrink-0">Fenêtre :</span>
+            <select
+              value={cwFrom}
+              onChange={(e) => setCwFrom(e.target.value)}
+              className="border border-slate-200 rounded-md px-2 py-1 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            >
+              {data.labels.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+            <span className="text-xs text-slate-400">→</span>
+            <select
+              value={cwTo}
+              onChange={(e) => setCwTo(e.target.value)}
+              className="border border-slate-200 rounded-md px-2 py-1 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            >
+              {data.labels.map((l) => <option key={l} value={l}>{l}</option>)}
+            </select>
+          </div>
+        )}
 
         {/* CA filter chips with quality dots */}
         <div className="flex flex-wrap gap-1.5">

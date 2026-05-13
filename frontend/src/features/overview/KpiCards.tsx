@@ -1,4 +1,4 @@
-import { BookOpen, Users, TrendingUp, Zap } from 'lucide-react'
+import { BookOpen, TrendingUp, Zap } from 'lucide-react'
 import type { KpisOut } from '@/lib/types'
 
 function pct(v: number) { return `${(v * 100).toFixed(0)}%` }
@@ -38,20 +38,13 @@ export function KpiCards({ kpis }: { kpis: KpisOut }) {
     : 'text-slate-900'
 
   return (
-    <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
       <KpiCard
         label="Topics actifs"
         value={String(kpis.total_active_topics)}
         icon={BookOpen}
         iconBg="bg-blue-50"
         iconColor="text-blue-600"
-      />
-      <KpiCard
-        label="CAs actifs"
-        value={String(kpis.total_active_cas)}
-        icon={Users}
-        iconBg="bg-violet-50"
-        iconColor="text-violet-600"
       />
       <KpiCard
         label="Charge moyenne"
