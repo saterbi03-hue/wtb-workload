@@ -65,7 +65,7 @@ class TeamRow(BaseModel):
     ca_display: str
     current_workload: float
     peak_workload: float
-    peak_week: str
+    peak_week: str   # format 'CWww-yyyy', e.g. 'CW34-2026'
     n_active_topics: int
 
 

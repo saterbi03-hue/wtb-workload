@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import api.state as state
-from domain.engine import n_active_topics_per_ca
+from domain.engine import n_active_topics_per_ca, to_calendar_week
 from domain.models import TeamRow
 from fastapi import APIRouter
 
@@ -26,7 +26,7 @@ def get_team() -> list[TeamRow]:
             ca_display=ca_display.get(ca_id, ca_id),
             current_workload=round(float(current[ca_id]), 3),
             peak_workload=round(float(peak[ca_id]), 3),
-            peak_week=peak_weeks[ca_id].strftime("%Y-%m-%d"),
+            peak_week=to_calendar_week(peak_weeks[ca_id])["cw"],
             n_active_topics=n_active.get(ca_id, 0),
         )
         for ca_id in wkly.columns

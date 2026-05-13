@@ -43,6 +43,8 @@ function QualityTooltip({ row }: { row: DataQualityRow }) {
       <p className="text-muted-foreground">Phases futures : <span className="font-medium text-foreground">{(row.future_coverage * 100).toFixed(0)}%</span></p>
       <p className="text-muted-foreground">Phases obsolètes : <span className="font-medium text-foreground">{(row.stale_ratio * 100).toFixed(0)}%</span></p>
       <p className="text-muted-foreground">Horizon fiable : <span className="font-medium text-foreground">sem. {row.reliable_horizon_weeks}</span></p>
+      <hr className="my-1.5 border-slate-100" />
+      <p className="text-slate-400 italic">0.4×Dates + 0.3×Futur + 0.3×(1−Obsolètes)</p>
     </div>
   )
 }
