@@ -26,6 +26,8 @@ def get_smoothing() -> SmoothingResponse:
                 topic=s["topic"],
                 project=s["project"],
                 impact=ImpactOut(**s["impact"]),
+                critical_week_cw=s["critical_week_cw"],
+                critical_week_impact=s["critical_week_impact"],
             )
             for s in raw["suggestions"]
         ],

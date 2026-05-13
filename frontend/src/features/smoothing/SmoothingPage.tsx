@@ -82,6 +82,10 @@ function TransferCard({
             <div className="flex-1 min-w-0">
               <p className="font-medium text-sm truncate">{suggestion.topic}</p>
               <p className="text-xs text-muted-foreground mt-0.5">{suggestion.project}</p>
+              <p className="text-xs text-slate-500 mt-1">
+                Pic&nbsp;: <span className="font-medium text-slate-700">{suggestion.critical_week_cw}</span>
+                {' · '}impact&nbsp;<span className="font-medium text-red-600">{(suggestion.critical_week_impact * 100).toFixed(1)}%</span>
+              </p>
             </div>
 
             {/* From CA */}

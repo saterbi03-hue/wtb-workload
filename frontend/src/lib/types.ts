@@ -146,6 +146,8 @@ export interface SmoothingSuggestion {
   topic: string
   project: string
   impact: ImpactOut
+  critical_week_cw: string
+  critical_week_impact: number
 }
 
 export interface SmoothingResponse {

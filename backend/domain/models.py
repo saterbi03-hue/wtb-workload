@@ -153,6 +153,8 @@ class SmoothingSuggestion(BaseModel):
     topic: str
     project: str
     impact: ImpactOut
+    critical_week_cw: str        # e.g. 'CW22-2026'
+    critical_week_impact: float  # VH contribution at peak week / capacity
 
 
 class SmoothingResponse(BaseModel):
