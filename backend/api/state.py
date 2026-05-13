@@ -17,26 +17,29 @@ _bundle: Optional[DataBundle] = None
 _phase_instances: Optional[pd.DataFrame] = None
 _weekly_forecast: Optional[pd.DataFrame] = None
 _monthly_forecast: Optional[pd.DataFrame] = None
+_complexity_df: Optional[pd.DataFrame] = None
 _live_mode: bool = False
 _cached_today: Optional[pd.Timestamp] = None
 
 
 def set_bundle(bundle: DataBundle) -> None:
-    global _bundle, _phase_instances, _weekly_forecast, _monthly_forecast, _cached_today
+    global _bundle, _phase_instances, _weekly_forecast, _monthly_forecast, _cached_today, _complexity_df
     _bundle = bundle
     _phase_instances = None
     _weekly_forecast = None
     _monthly_forecast = None
     _cached_today = None
+    _complexity_df = None
 
 
 def set_live_mode(enabled: bool) -> None:
-    global _live_mode, _cached_today, _phase_instances, _weekly_forecast, _monthly_forecast
+    global _live_mode, _cached_today, _phase_instances, _weekly_forecast, _monthly_forecast, _complexity_df
     _live_mode = enabled
     _cached_today = None
     _phase_instances = None
     _weekly_forecast = None
     _monthly_forecast = None
+    _complexity_df = None
 
 
 def is_live_mode() -> bool:
@@ -87,3 +90,11 @@ def get_monthly_forecast() -> pd.DataFrame:
         from domain.engine import forecast_monthly
         _monthly_forecast = forecast_monthly(get_weekly_forecast())
     return _monthly_forecast
+
+
+def get_complexity_df() -> pd.DataFrame:
+    global _complexity_df
+    if _complexity_df is None:
+        from domain.engine import compute_complexity
+        _complexity_df = compute_complexity(require_bundle(), get_phase_instances())
+    return _complexity_df

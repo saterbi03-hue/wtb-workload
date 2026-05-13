@@ -3,6 +3,7 @@ import pandas as pd
 from domain.engine import (
     EXCLUDED_STATUSES,
     build_phase_instances,
+    compute_complexity,
     criticality_matrix,
     data_quality,
     data_warnings,
@@ -330,3 +331,87 @@ def test_data_warnings_detects_inverted_dates():
     assert inv[0]["severity"] == "ERROR"
     assert inv[0]["phase"] == "advanced"
     assert result["errors"] == 1
+
+
+def test_compute_complexity_compressed_scores_higher(bundle: DataBundle):
+    """Compressing a topic's dates to 1 week raises its complexity_score."""
+    pi = build_phase_instances(bundle)
+    dated = pi[
+        pi["scheduled_start"].notna()
+        & pi["scheduled_end"].notna()
+        & ~pi["status"].isin(EXCLUDED_STATUSES)
+    ]
+    assert not dated.empty
+    topic_id = int(dated["topic_id"].iloc[0])
+
+    cx_base = compute_complexity(bundle, pi)
+
+    pi2 = pi.copy()
+    ref = pd.Timestamp(bundle.config["today"])
+    mask = pi2["topic_id"] == topic_id
+    pi2.loc[mask, "scheduled_start"] = ref
+    pi2.loc[mask, "scheduled_end"] = ref + pd.Timedelta(weeks=1)
+    cx_compressed = compute_complexity(bundle, pi2)
+
+    base = float(cx_base.loc[topic_id, "complexity_score"]) if topic_id in cx_base.index else 0.0
+    assert cx_compressed.loc[topic_id, "complexity_score"] >= base
+
+
+def test_jalonnement_weighted_by_duration_hrs():
+    """j_score weights phases by duration_hrs instead of counting equally.
+
+    Setup: 4 phases, 2 VAL (weight 0.11 each), 2 EN COURS no dates (weight 0.09 each).
+    Old count-based: (2+0)/4 = 0.50
+    New weight-based: (0.11+0.11) / (0.11+0.11+0.09+0.09) = 0.22/0.40 = 0.55
+    """
+    today = pd.Timestamp("2026-05-12")
+    future = today + pd.Timedelta(weeks=8)
+
+    phase_params = pd.DataFrame([
+        {"phase": "advanced",  "duration_hrs": 0.11, "delai_weeks": 4},
+        {"phase": "digital",   "duration_hrs": 0.11, "delai_weeks": 4},
+        {"phase": "static",    "duration_hrs": 0.09, "delai_weeks": 4},
+        {"phase": "dynamic",   "duration_hrs": 0.09, "delai_weeks": 4},
+        {"phase": "delivery",  "duration_hrs": 0.10, "delai_weeks": 4},
+    ]).set_index("phase")
+    topics = pd.DataFrame([{
+        "id": 1, "ca_sheet": "CA1", "ca_display": "CA One",
+        "project": "P", "topic": "T",
+        "supplier": None, "global_status": "EN COURS",
+        **{f"{ph}_{s}": None
+           for ph in ["advanced", "digital", "static", "dynamic", "delivery"]
+           for s in ("start", "end", "status")},
+        "complexity_score": 50.0, "complexity_level": "Moyen",
+    }])
+    persons = pd.DataFrame([{"ca_sheet": "CA1", "ca_display": "CA One", "active": 1}])
+    config = {"today": today, "weekly_capacity_hrs": 40.0,
+              "catchup_window_weeks": 2, "stale_threshold_weeks": 4,
+              "forecast_horizon_weeks": 4}
+    b = DataBundle(topics=topics, phase_params=phase_params, persons=persons, config=config)
+
+    def _row(phase, status, has_dates):
+        return {
+            "topic_id": 1, "ca_id": "CA1", "ca_display": "CA One",
+            "project": "P", "topic": "T", "supplier": None,
+            "global_status": "EN COURS", "phase": phase,
+            "scheduled_start": (today - pd.Timedelta(weeks=2)) if has_dates else None,
+            "scheduled_end": future if has_dates else None,
+            "status": status, "vh": 1.0,
+            "effective_start": today, "effective_end": future,
+            "is_stale": False, "is_active_now": True,
+            "complexity_score": 50.0, "complexity_level": "Moyen",
+        }
+
+    pi = pd.DataFrame([
+        _row("advanced", "VAL",      True),
+        _row("digital",  "VAL",      True),
+        _row("static",   "EN COURS", False),   # no dates → not on-track
+        _row("dynamic",  "EN COURS", False),   # no dates → not on-track
+    ])
+
+    result = criticality_matrix(b, pi)
+    topic_entry = next(
+        t for cell in result["cells"] for t in cell["topics"] if t["topic_id"] == 1
+    )
+    j = topic_entry["jalonnement_score"]
+    assert abs(j - 0.55) < 1e-6, f"Expected 0.55, got {j}"

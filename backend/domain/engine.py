@@ -159,7 +159,67 @@ def build_phase_instances(
         & (df["effective_end"] >= current_monday)
     )
 
+    if not bool(bundle.config.get("use_excel_complexity", True)):
+        cx = compute_complexity(bundle, df)
+        if not cx.empty:
+            df["complexity_score"] = df["topic_id"].map(cx["complexity_score"]).combine_first(df["complexity_score"])
+            df["complexity_level"] = df["topic_id"].map(cx["complexity_level"]).combine_first(df["complexity_level"])
+
     return df
+
+
+def _score_to_complexity_level(score: float) -> str:
+    if score < 20: return "Très faible"
+    if score < 40: return "Faible"
+    if score < 60: return "Moyen"
+    if score < 80: return "Fort"
+    return "Très fort"
+
+
+def compute_complexity(
+    bundle: DataBundle,
+    phase_instances: pd.DataFrame,
+) -> pd.DataFrame:
+    """Recalculate complexity_score and complexity_level per topic.
+
+    weekly_load_hrs = Σ(duration_hrs / actual_weeks) over active phases
+      actual_weeks = (scheduled_end - scheduled_start).days / 7
+      or delai_weeks if dates are missing/invalid (<=0)
+    complexity_score = min(100, weekly_load_hrs / 5.65 * 50)
+    complexity_level = <20: Très faible … >=80: Très fort
+
+    Returns DataFrame indexed by topic_id with columns:
+      weekly_load_hrs, complexity_score, complexity_level
+    """
+    excluded = _excluded(bundle)
+    active = phase_instances[~phase_instances["status"].isin(excluded)]
+
+    records: list[dict] = []
+    for topic_id, grp in active.groupby("topic_id"):
+        weekly_load = 0.0
+        for _, r in grp.iterrows():
+            params = bundle.phase_params.loc[r["phase"]]
+            dur   = float(params["duration_hrs"])
+            std_w = float(params["delai_weeks"])
+            s, e  = r["scheduled_start"], r["scheduled_end"]
+            if pd.notna(s) and pd.notna(e):
+                actual_w = (pd.Timestamp(e) - pd.Timestamp(s)).days / 7.0
+                weekly_load += dur / actual_w if actual_w > 0 else dur / std_w
+            else:
+                weekly_load += dur / std_w
+        score = min(100.0, weekly_load / 5.65 * 50.0)
+        records.append({
+            "topic_id": int(topic_id),
+            "weekly_load_hrs": round(weekly_load, 4),
+            "complexity_score": round(score, 2),
+            "complexity_level": _score_to_complexity_level(score),
+        })
+
+    if not records:
+        return pd.DataFrame(
+            columns=["topic_id", "weekly_load_hrs", "complexity_score", "complexity_level"]
+        ).set_index("topic_id")
+    return pd.DataFrame(records).set_index("topic_id")
 
 
 # ── Forecast ──────────────────────────────────────────────────────────────────
@@ -297,6 +357,8 @@ def criticality_matrix(
         ]["topic_id"].unique()
     )
 
+    weight_map = bundle.phase_params["duration_hrs"].to_dict()
+
     cells: dict[tuple[str, str], list[dict]] = {
         (c, j): [] for c in _COMPLEXITY_LEVELS for j in _JALONNEMENT_LEVELS
     }
@@ -311,21 +373,25 @@ def criticality_matrix(
             continue
         tr = topic_rows.iloc[0]
 
-        # Complexity level
-        c_level = _opt_str(tr.get("complexity_level"))
+        # Complexity level — read from phase_instances (reflects computed or Excel values)
+        first_phase = topic_phases.iloc[0]
+        c_level = _opt_str(first_phase.get("complexity_level"))
         if c_level not in _COMPLEXITY_LEVELS:
             unscored += 1
             continue
-        c_score = float(tr.get("complexity_score", 0.0) or 0.0)
+        c_score = float(first_phase.get("complexity_score", 0.0) or 0.0)
 
-        # Jalonnement: ignore CANCELED phases entirely
+        # Jalonnement: ignore CANCELED phases entirely; weight remaining by duration_hrs
         non_canceled = topic_phases[topic_phases["status"] != "CANCELED"]
-        total = len(non_canceled)
-        if total == 0:
+        total_weight = float(non_canceled["phase"].map(weight_map).sum())
+        if total_weight == 0:
             j_level = "Critique"
             j_score = 0.0
         else:
-            val_count = int((non_canceled["status"] == "VAL").sum())
+            val_weight = float(
+                non_canceled.loc[non_canceled["status"] == "VAL", "phase"]
+                .map(weight_map).sum()
+            )
             active_phases = non_canceled[non_canceled["status"] != "VAL"]
             on_track = active_phases[
                 active_phases["scheduled_start"].notna()
@@ -333,9 +399,10 @@ def criticality_matrix(
                 & (active_phases["effective_end"] > today)
                 & ~active_phases["is_stale"]
             ]
-#### "Jalonnement Score"=("Validated Phases" +"On Track Phases" )/"Total Phases"             
-            j_score = (val_count + len(on_track)) / total
-#### Classe le sujet :	Bon Moyen Faible Critique                
+            on_track_weight = float(on_track["phase"].map(weight_map).sum())
+#### "Jalonnement Score" = (weight_VAL + weight_on_track) / weight_total (pondéré par duration_hrs)
+            j_score = (val_weight + on_track_weight) / total_weight
+#### Classe le sujet :	Bon Moyen Faible Critique
             if j_score >= 0.75:
                 j_level = "Bon"
             elif j_score >= 0.50:
@@ -378,25 +445,13 @@ def criticality_matrix(
 
 # ── Smoothing ─────────────────────────────────────────────────────────────────
 
-def smoothing_suggestions(
+def smoothing_suggestions_horizon_avg(
     bundle: DataBundle,
     phase_instances: pd.DataFrame,
     weekly_df: pd.DataFrame,
     min_gap: float = 0.10,
 ) -> dict:
-    """Iteratively rebalance team workload toward equal distribution.
-
-    Optimises the mean workload across the full forecast horizon (not just
-    week 0). Each candidate topic is scored by its average weekly load
-    contribution across all horizon weeks so transfers with long-lasting
-    impact are preferred. Stops only when the gap between the most- and
-    least-loaded CA falls below min_gap or no improving transfer exists.
-
-    Returns:
-        suggestions          – ordered list of transfer dicts
-        team_balance_before  – load std-dev before any transfers (mean-based)
-        team_balance_after   – load std-dev after applying all suggestions
-    """
+    """Kept for comparison. Optimises full-horizon average load. See smoothing_suggestions."""
     capacity = float(bundle.config["weekly_capacity_hrs"])
     today = pd.Timestamp(bundle.config["today"])
     ca_display = bundle.persons.set_index("ca_sheet")["ca_display"].to_dict()
@@ -506,6 +561,119 @@ def smoothing_suggestions(
         "suggestions": suggestions,
         "team_balance_before": round(balance_before, 4),
         "team_balance_after": round(float(working.std()), 4),
+    }
+
+
+def smoothing_suggestions(
+    bundle: DataBundle,
+    phase_instances: pd.DataFrame,
+    weekly_df: pd.DataFrame,
+    min_critical_impact: float = 0.056,
+) -> dict:
+    """Target peak-week overloads rather than horizon average.
+
+    For the most-loaded CA, identifies the critical week (highest load),
+    scores candidate topics by their VH contribution to that specific week.
+    Only suggestions with critical_week_impact >= min_critical_impact are kept.
+
+    Returns:
+        suggestions          – list of transfer dicts with critical_week_cw/impact
+        team_balance_before  – load std-dev (mean-based) before transfers
+        team_balance_after   – load std-dev (mean-based) after transfers
+    """
+    capacity = float(bundle.config["weekly_capacity_hrs"])
+    today = pd.Timestamp(bundle.config["today"])
+    ca_display = bundle.persons.set_index("ca_sheet")["ca_display"].to_dict()
+
+    working_peak = weekly_df.max().copy()
+    working_mean = weekly_df.mean().copy()
+    balance_before = float(working_mean.std())
+
+    weeks_np = weekly_df.index.values.astype("datetime64[ns]")
+    weeks_end_np = weeks_np + np.timedelta64(7, "D")
+    H = max(len(weeks_np), 1)
+
+    pool = phase_instances[
+        ~phase_instances["status"].isin(EXCLUDED_STATUSES)
+        & ~phase_instances["is_stale"]
+        & (phase_instances["effective_end"] > today)
+    ]
+
+    transferred_topics: set[int] = set()
+    suggestions: list[dict] = []
+
+    for _ in range(100):
+        from_ca = str(working_peak.idxmax())
+        to_ca = str(working_peak.idxmin())
+        if working_peak[from_ca] <= 1.0:
+            break
+
+        crit_idx = int(weekly_df[from_ca].argmax())
+        crit_ts = weekly_df.index[crit_idx]
+        crit_start_np = weeks_np[crit_idx]
+        crit_end_np = weeks_end_np[crit_idx]
+
+        ca_pool = pool[
+            (pool["ca_id"] == from_ca)
+            & ~pool["topic_id"].isin(transferred_topics)
+        ]
+        if ca_pool.empty:
+            break
+
+        best_topic_id: Optional[int] = None
+        best_impact = 0.0
+
+        for topic_id in ca_pool["topic_id"].unique():
+            topic_phases = ca_pool[ca_pool["topic_id"] == topic_id]
+            eff_starts = topic_phases["effective_start"].values.astype("datetime64[ns]")
+            eff_ends = topic_phases["effective_end"].values.astype("datetime64[ns]")
+            vh_vals = topic_phases["vh"].values.astype(float)
+
+            overlap = (eff_starts < crit_end_np) & (eff_ends >= crit_start_np)
+            crit_impact = float((vh_vals[overlap] / capacity).sum())
+
+            if crit_impact < min_critical_impact:
+                continue
+            if crit_impact > best_impact:
+                best_impact = crit_impact
+                best_topic_id = int(topic_id)
+
+        if best_topic_id is None:
+            break
+
+        topic_rows = bundle.topics[bundle.topics["id"] == best_topic_id]
+        if topic_rows.empty:
+            break
+        topic_row = topic_rows.iloc[0]
+
+        suggestions.append({
+            "from_ca_id": from_ca,
+            "from_ca_display": ca_display.get(from_ca, from_ca),
+            "to_ca_id": to_ca,
+            "to_ca_display": ca_display.get(to_ca, to_ca),
+            "topic_id": best_topic_id,
+            "topic": str(topic_row["topic"]),
+            "project": str(topic_row["project"]),
+            "critical_week_cw": to_calendar_week(crit_ts)["cw"],
+            "critical_week_impact": round(best_impact, 4),
+            "impact": {
+                "from_before": round(float(working_peak[from_ca]), 3),
+                "from_after": round(float(working_peak[from_ca]) - best_impact, 3),
+                "to_before": round(float(working_peak[to_ca]), 3),
+                "to_after": round(float(working_peak[to_ca]) + best_impact, 3),
+            },
+        })
+
+        working_peak[from_ca] -= best_impact
+        working_peak[to_ca] += best_impact
+        working_mean[from_ca] -= best_impact / H
+        working_mean[to_ca] += best_impact / H
+        transferred_topics.add(best_topic_id)
+
+    return {
+        "suggestions": suggestions,
+        "team_balance_before": round(balance_before, 4),
+        "team_balance_after": round(float(working_mean.std()), 4),
     }
 
 
